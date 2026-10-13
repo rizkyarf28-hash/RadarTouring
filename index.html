@@ -259,7 +259,6 @@
             <p style="margin: 0; font-size: 14px; color: #aaa;">Status: <span style="color:#4CAF50;">Live Terhubung</span></p>
         </div>
 
-        <!-- FITUR BARU: CARI TUJUAN -->
         <div class="search-box">
             <p style="margin: 0 0 5px 0; font-size: 12px; color: #aaa;">Tujuan Akhir / Destinasi:</p>
             <input type="text" id="input-destination" placeholder="Misal: Cibadak, Sukabumi..." style="padding: 8px; font-size: 12px;">
@@ -283,7 +282,7 @@
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.4.0/firebase-app.js";
         import { getDatabase, ref, set, onValue, onDisconnect, remove, push } from "https://www.gstatic.com/firebasejs/10.4.0/firebase-database.js";
 
-        // Konfigurasi Firebase dari akun Anda
+        // Konfigurasi Firebase
         const firebaseConfig = {
             apiKey: "AIzaSyC35owuWmWRZj0fXNYT7XPnJKXha2TeD2I",
             authDomain: "gas-touring.firebaseapp.com",
@@ -304,15 +303,12 @@
         const friendMarkers = {};
         const checkpointMarkers = {};
         
-        // Variabel untuk Rute Tujuan
         let destinationMarker = null;
-        let routeLine = null;
+        let routeLine = null; // Ini untuk menyimpan garis jalan raya
 
-        // Inisialisasi Peta
         function initMap() {
             map = L.map('map', { zoomControl: false }).setView([-2.5489, 118.0149], 5);
             
-            // Menggunakan OSM Standar (Gratis) yang digelapkan via CSS
             L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
                 attribution: '&copy; OpenStreetMap contributors',
                 maxZoom: 19
@@ -328,7 +324,6 @@
             });
         }
 
-        // Mulai Touring
         document.getElementById('btn-start').addEventListener('click', () => {
             const nameInput = document.getElementById('rider-name').value;
             const roleInput = document.getElementById('rider-role').value;
@@ -355,7 +350,6 @@
             dengarDatabase();
         });
 
-        // Lacak GPS Realtime
         function mulaiLacakGPS() {
             if ("geolocation" in navigator) {
                 navigator.geolocation.watchPosition(
@@ -368,9 +362,6 @@
                         
                         document.getElementById('alert-msg').style.display = 'none';
                         updateMyMarker(lat, lng);
-                        
-                        // Jika rute tujuan aktif, perbarui garis rutenya
-                        updateRouteLine();
 
                         set(ref(db, 'users/' + myId), {
                             name: userName,
@@ -381,10 +372,9 @@
                         });
                     },
                     (error) => {
-                        showAlert("GPS gagal atau loading lama. Pastikan buka di HP.");
+                        showAlert("GPS gagal. Pastikan buka di HP dan Izinkan Lokasi.");
                         console.error(error);
                     },
-                    // Setting diubah: lebih ramah untuk Laptop, sangat akurat untuk HP
                     { enableHighAccuracy: false, maximumAge: 10000, timeout: 15000 }
                 );
             } else {
@@ -458,7 +448,7 @@
         }
 
         // ==========================================
-        // FITUR BARU: CARI TUJUAN & BUAT RUTE GARIS
+        // FITUR UPDATE: RUTE MENGIKUTI JALAN RAYA (OSRM)
         // ==========================================
         document.getElementById('btn-search-dest').addEventListener('click', () => {
             const query = document.getElementById('input-destination').value;
@@ -466,15 +456,14 @@
                 showAlert("Ketik nama tujuan dulu!");
                 return;
             }
-            
             if(myCurrentLat === 0) {
                 showAlert("Tunggu sampai GPS Anda ditemukan!");
                 return;
             }
 
-            showAlert("Mencari lokasi...");
+            showAlert("Mencari rute jalan raya tercepat...");
             
-            // Pencarian lokasi menggunakan API Nominatim gratis
+            // 1. Cari Koordinat Lokasi
             fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&limit=1`)
                 .then(response => response.json())
                 .then(data => {
@@ -483,53 +472,50 @@
                         const destLng = parseFloat(data[0].lon);
                         const destName = data[0].display_name.split(',')[0]; 
                         
-                        setDestination(destLat, destLng, destName);
-                        document.getElementById('sidebar').classList.add('collapsed'); // Tutup menu
+                        setDestinationAndDrawRoute(destLat, destLng, destName);
+                        document.getElementById('sidebar').classList.add('collapsed');
                     } else {
-                        showAlert("Lokasi tidak ditemukan. Coba nama kota yang lebih jelas.");
+                        showAlert("Lokasi tidak ditemukan.");
                     }
                 })
                 .catch(err => {
-                    showAlert("Gagal mencari lokasi. Periksa internet Anda.");
+                    showAlert("Gagal mencari lokasi.");
                 });
         });
 
-        function setDestination(lat, lng, name) {
-            // Hapus tujuan lama jika ada
+        function setDestinationAndDrawRoute(lat, lng, name) {
             if(destinationMarker) map.removeLayer(destinationMarker);
             
-            // Buat bendera tujuan
             const destIcon = L.divIcon({ className: 'destination-marker', iconSize: [20, 20] });
             destinationMarker = L.marker([lat, lng], {icon: destIcon}).addTo(map)
                 .bindPopup(`<b>🏁 TUJUAN: ${name}</b>`).openPopup();
                 
             document.getElementById('btn-clear-route').style.display = 'block';
-            showAlert(`Menuju ${name}...`);
             
-            // Gambar garis rute dan paskan layar
-            updateRouteLine();
+            // 2. Minta OSRM menggambar rute jalan raya dari Saya ke Tujuan
+            const osrmUrl = `https://router.project-osrm.org/route/v1/driving/${myCurrentLng},${myCurrentLat};${lng},${lat}?overview=full&geometries=geojson`;
             
-            // Zoom layar agar titik kita dan titik tujuan terlihat dua-duanya
-            const bounds = L.latLngBounds([[myCurrentLat, myCurrentLng], [lat, lng]]);
-            map.fitBounds(bounds, { padding: [50, 50] });
-        }
-        
-        function updateRouteLine() {
-            if(destinationMarker && myCurrentLat !== 0) {
-                // Hapus garis lama
-                if(routeLine) map.removeLayer(routeLine);
-                
-                // Gambar garis baru dari posisi saya ke tujuan
-                const destLatLng = destinationMarker.getLatLng();
-                routeLine = L.polyline([
-                    [myCurrentLat, myCurrentLng],
-                    [destLatLng.lat, destLatLng.lng]
-                ], {
-                    color: '#E91E63', // Warna Pink Merah
-                    weight: 4,
-                    dashArray: '10, 10' // Garis putus-putus
-                }).addTo(map);
-            }
+            fetch(osrmUrl)
+                .then(res => res.json())
+                .then(data => {
+                    if(data.routes && data.routes.length > 0) {
+                        if(routeLine) map.removeLayer(routeLine);
+                        
+                        // Gambar garis mengikuti jalan
+                        routeLine = L.geoJSON(data.routes[0].geometry, {
+                            style: { color: '#E91E63', weight: 5, opacity: 0.8 }
+                        }).addTo(map);
+                        
+                        // Paskan layar agar seluruh rute terlihat
+                        map.fitBounds(routeLine.getBounds(), { padding: [50, 50] });
+                        showAlert(`Rute menuju ${name} ditemukan!`);
+                    } else {
+                        showAlert("Tidak ada akses jalan raya ke sana.");
+                    }
+                })
+                .catch(err => {
+                    showAlert("Gagal memuat rute jalan raya.");
+                });
         }
         
         document.getElementById('btn-clear-route').addEventListener('click', () => {
@@ -540,10 +526,8 @@
             document.getElementById('input-destination').value = '';
             document.getElementById('btn-clear-route').style.display = 'none';
             
-            // Fokus kembali ke titik saya
             if(myMarker) map.flyTo(myMarker.getLatLng(), 15);
         });
-        // ==========================================
 
         document.getElementById('btn-checkpoint').addEventListener('click', () => {
             isAddingCheckpoint = true;
@@ -556,7 +540,7 @@
         });
 
         function simpanCheckpointKeFirebase(lat, lng) {
-            let namaTempat = prompt("Nama Checkpoint (Misal: Rest Area / Pom Bensin):");
+            let namaTempat = prompt("Nama Checkpoint:");
             if(namaTempat) {
                 push(ref(db, 'checkpoints'), {
                     name: namaTempat,
